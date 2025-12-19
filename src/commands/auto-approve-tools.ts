@@ -79,6 +79,44 @@ async function queryLLM(
   );
 }
 
+// Whitelist of all known Claude Code tools
+// Tools not in this list will be denied by default
+const CLAUDE_CODE_TOOLS = new Set([
+  // Read-only tools
+  'Read',
+  'LS',
+  'Glob',
+  'Grep',
+  'WebFetch',
+  'WebSearch',
+  'NotebookRead',
+  'BashOutput',
+
+  // Write/Edit tools
+  'Write',
+  'Edit',
+  'MultiEdit',
+  'NotebookEdit',
+
+  // Execution tools
+  'Bash',
+  'Task',
+  'KillShell',
+
+  // Planning and task management tools
+  'TodoWrite',
+  'TodoRead',
+  'EnterPlanMode',
+  'ExitPlanMode',
+
+  // User interaction tools
+  'AskUserQuestion',
+
+  // Extension tools
+  'Skill',
+  'SlashCommand',
+]);
+
 // Tools that are unambiguously safe and should be auto-approved without AI query
 const FAST_APPROVE_TOOLS = new Set([
   'Read',
@@ -89,7 +127,11 @@ const FAST_APPROVE_TOOLS = new Set([
   'WebSearch',
   'NotebookRead',
   'TodoWrite',
+  'TodoRead',
   'Task',
+  'BashOutput',
+  'Skill',
+  'SlashCommand',
 ]);
 
 // Tools that are safe for writing/editing in development contexts
@@ -100,11 +142,38 @@ const SAFE_WRITE_TOOLS = new Set([
   'NotebookEdit',
 ]);
 
+// Check if a tool is an MCP tool (prefixed with mcp__)
+function isMcpTool(toolName: string): boolean {
+  return toolName.startsWith('mcp__');
+}
+
 function shouldFastApprove(
   toolName: string,
-  _toolInput: Record<string, unknown>
+  toolInput: Record<string, unknown>
 ): HookOutput | null {
-  // ExitPlanMode should always ask for user feedback
+  // Deny unknown tools that are not in the whitelist (unless they are MCP tools)
+  if (!CLAUDE_CODE_TOOLS.has(toolName) && !isMcpTool(toolName)) {
+    return {
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'deny',
+        permissionDecisionReason: `${toolName} is not a recognized Claude Code tool`,
+      },
+    };
+  }
+
+  // Planning tools should always ask for user feedback
+  if (toolName === 'EnterPlanMode') {
+    return {
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'ask',
+        permissionDecisionReason:
+          'EnterPlanMode requires user confirmation before proceeding',
+      },
+    };
+  }
+
   if (toolName === 'ExitPlanMode') {
     return {
       hookSpecificOutput: {
@@ -112,6 +181,33 @@ function shouldFastApprove(
         permissionDecision: 'ask',
         permissionDecisionReason:
           'ExitPlanMode requires user confirmation before proceeding',
+      },
+    };
+  }
+
+  if (toolName === 'AskUserQuestion') {
+    const potentialQuestion = toolInput['question'];
+    const question =
+      typeof potentialQuestion === 'string' ? potentialQuestion : null;
+
+    return {
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'ask',
+        permissionDecisionReason: question
+          ? `Passing question to user: "${question}"`
+          : 'AskUserQuestion requires a user response',
+      },
+    };
+  }
+
+  // MCP tools are approved (they passed the whitelist check above)
+  if (isMcpTool(toolName)) {
+    return {
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'allow',
+        permissionDecisionReason: `${toolName} is an MCP tool`,
       },
     };
   }
@@ -138,12 +234,10 @@ function shouldFastApprove(
     };
   }
 
-  return null; // No fast approval, use AI query
+  return null; // No fast approval, use AI query (for Bash, KillShell, etc.)
 }
 
-export async function autoApproveTools(
-  noCache?: boolean
-): Promise<void> {
+export async function autoApproveTools(noCache?: boolean): Promise<void> {
   try {
     const input = readFileSync(0, 'utf8');
     const jsonData = JSON.parse(input);
@@ -212,9 +306,9 @@ export async function autoApproveTools(
         if (!canConfigureLLMClient()) {
           throw new Error(
             'No authentication method configured. Available options:\n' +
-            '1. beyondthehype.dev: Set beyondthehypeApiKey in config (recommended)\n' +
-            '2. OpenAI-compatible: Set openaiApiKey/OPENAI_API_KEY or apiKey/ANTHROPIC_API_KEY in config or environment\n' +
-            '\nRun `ccb install` to configure authentication interactively.'
+              '1. beyondthehype.dev: Set beyondthehypeApiKey in config (recommended)\n' +
+              '2. OpenAI-compatible: Set openaiApiKey/OPENAI_API_KEY or apiKey/ANTHROPIC_API_KEY in config or environment\n' +
+              '\nRun `ccb install` to configure authentication interactively.'
           );
         }
 

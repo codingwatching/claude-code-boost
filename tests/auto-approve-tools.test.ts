@@ -143,7 +143,26 @@ describe('auto-approve-tools', () => {
     }
   });
 
-  it('should handle unknown tools', async () => {
+  it('should always ask for AskUserQuestion tools so the user can respond', async () => {
+    const prompt = 'Do you approve this deployment?';
+    const input = createTestInput('AskUserQuestion', {
+      question: prompt,
+    });
+    const result = await runCommand(JSON.stringify(input));
+
+    expect(result.code).toBe(0);
+
+    const output = JSON.parse(result.stdout);
+    expect(output.hookSpecificOutput).toHaveProperty(
+      'permissionDecision',
+      'ask'
+    );
+    expect(output.hookSpecificOutput.permissionDecisionReason).toContain(
+      prompt
+    );
+  });
+
+  it('should deny unknown tools not in the whitelist', async () => {
     const input = createTestInput('UnknownTool', { arbitrary: 'data' });
     const result = await runCommand(JSON.stringify(input));
 
@@ -152,21 +171,18 @@ describe('auto-approve-tools', () => {
 
     const output = JSON.parse(result.stdout);
 
-    // The response should have hookSpecificOutput with a reason field
+    // The response should deny unknown tools
     expect(output).toHaveProperty('hookSpecificOutput');
+    expect(output.hookSpecificOutput).toHaveProperty(
+      'permissionDecision',
+      'deny'
+    );
     expect(output.hookSpecificOutput).toHaveProperty(
       'permissionDecisionReason'
     );
-    expect(typeof output.hookSpecificOutput.permissionDecisionReason).toBe(
-      'string'
+    expect(output.hookSpecificOutput.permissionDecisionReason).toContain(
+      'not a recognized Claude Code tool'
     );
-
-    // Decision field is optional (can be undefined)
-    if (output.hookSpecificOutput.permissionDecision !== undefined) {
-      expect(['allow', 'deny', 'ask']).toContain(
-        output.hookSpecificOutput.permissionDecision
-      );
-    }
   });
 
   it('should handle malformed input gracefully', async () => {
@@ -585,6 +601,28 @@ describe('auto-approve-tools', () => {
         'WebSearch is a safe read-only operation'
       );
     });
+
+    it('should fast-approve MCP tools', async () => {
+      const input = createTestInput('mcp__playwright__browser_click', {
+        selector: '#button',
+      });
+      const result = await runCommand(JSON.stringify(input));
+
+      expect(result.code).toBe(0);
+      expect(result.stdout).toBeTruthy();
+
+      const output = JSON.parse(result.stdout);
+      expect(output.hookSpecificOutput).toHaveProperty(
+        'permissionDecision',
+        'allow'
+      );
+      expect(output.hookSpecificOutput).toHaveProperty(
+        'permissionDecisionReason'
+      );
+      expect(output.hookSpecificOutput.permissionDecisionReason).toContain(
+        'is an MCP tool'
+      );
+    });
   });
 
   describe('Logging functionality', () => {
@@ -684,7 +722,7 @@ describe('auto-approve-tools', () => {
       expect(blockEntry.tool).toBe('Bash');
 
       expect(undefinedEntry).toBeDefined();
-      expect(['undefined', 'deny', 'ask']).toContain(undefinedEntry.decision);
+      expect(undefinedEntry.decision).toBe('deny');
       expect(undefinedEntry.tool).toBe('UnknownTool');
     });
 

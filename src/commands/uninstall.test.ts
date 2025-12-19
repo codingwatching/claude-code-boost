@@ -87,6 +87,7 @@ describe('uninstall', () => {
 
     await uninstall({ nonInteractive: true });
 
+    expect(consoleSpy).toHaveBeenCalledWith('🗑️  CCB Uninstaller');
     expect(consoleSpy).toHaveBeenCalledWith(
       'No CCB hooks found in user settings. Nothing to uninstall.'
     );
@@ -272,6 +273,7 @@ describe('uninstall', () => {
 
     await uninstall({ nonInteractive: true });
 
+    expect(consoleSpy).toHaveBeenCalledWith('🗑️  CCB Uninstaller');
     expect(consoleSpy).toHaveBeenCalledWith(
       '\n⚠️  Important: This only removes CCB from your user settings.'
     );
