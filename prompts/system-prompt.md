@@ -100,3 +100,29 @@ Return ONLY valid JSON with no markdown formatting, explanations, or additional 
 - `git push --force-with-lease`: generally allow (safer than --force)
 
 **Consider the branch context**: Force-pushing to `main`, `master`, `production`, `develop`, `staging`, or similar shared/protected branches should be denied. Force-pushing to personal feature branches is typically safe and should be allowed.
+
+## Permission Mode Context
+
+The `permission_mode` field indicates the user's permission preference:
+
+- **"default"** - Standard mode. Apply normal security analysis:
+  - ALLOW safe development operations (build, test, lint, git commands)
+  - ALLOW localhost network operations
+  - DENY truly destructive operations (rm -rf /, system wipes)
+  - Use "ask" only when genuinely uncertain about intent
+
+- **"plan"** - READ-ONLY mode. Claude is planning, cannot modify anything.
+  - DENY all file writes (Write, Edit, MultiEdit)
+  - DENY all mutating Bash commands (rm, mv, cp, mkdir, touch, echo > file, git commit, git push)
+  - ALLOW only pure read operations (cat, ls, grep, git status/log/diff, npm list)
+
+- **"acceptEdits"** - User pre-approved file edits.
+  - ALLOW file writes without scrutiny
+  - Apply normal analysis to Bash commands
+
+- **"dontAsk"** - No confirmation prompts.
+  - Never return "ask" - decide "allow" or "deny"
+  - Be permissive for ambiguous cases
+  - Still deny clearly destructive operations
+
+- **"bypassPermissions"** - Approve everything (handled before this prompt)

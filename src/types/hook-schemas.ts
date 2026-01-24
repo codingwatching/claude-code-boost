@@ -1,11 +1,23 @@
 import { z } from 'zod';
 
+// Permission Mode Schema
+export const PermissionModeSchema = z.enum([
+  'default',
+  'plan',
+  'acceptEdits',
+  'dontAsk',
+  'bypassPermissions',
+]);
+export type PermissionMode = z.infer<typeof PermissionModeSchema>;
+
 // Claude Code Hook Input Schema
 export const HookInputSchema = z.object({
   session_id: z.string(),
   transcript_path: z.string(),
   tool_name: z.string(),
   tool_input: z.record(z.string(), z.unknown()),
+  cwd: z.string().optional(),
+  permission_mode: PermissionModeSchema.optional().default('default'),
 });
 
 export type HookInput = z.infer<typeof HookInputSchema>;

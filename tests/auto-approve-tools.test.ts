@@ -936,4 +936,248 @@ describe('auto-approve-tools', () => {
       );
     });
   });
+
+  describe('Permission mode handling', () => {
+    function createTestInputWithMode(
+      toolName: string,
+      toolInput: Record<string, unknown>,
+      permissionMode: string
+    ) {
+      return {
+        session_id: 'test-session',
+        transcript_path: '/tmp/test-transcript',
+        tool_name: toolName,
+        tool_input: toolInput,
+        permission_mode: permissionMode,
+      };
+    }
+
+    describe('plan mode', () => {
+      it('should allow Read operations in plan mode', async () => {
+        const input = createTestInputWithMode(
+          'Read',
+          { file_path: '/test/file.txt' },
+          'plan'
+        );
+        const result = await runCommand(JSON.stringify(input));
+
+        expect(result.code).toBe(0);
+        const output = JSON.parse(result.stdout);
+        expect(output.hookSpecificOutput.permissionDecision).toBe('allow');
+      });
+
+      it('should deny Write operations in plan mode', async () => {
+        const input = createTestInputWithMode(
+          'Write',
+          { file_path: '/test/file.txt', content: 'test' },
+          'plan'
+        );
+        const result = await runCommand(JSON.stringify(input));
+
+        expect(result.code).toBe(0);
+        const output = JSON.parse(result.stdout);
+        expect(output.hookSpecificOutput.permissionDecision).toBe('deny');
+        expect(output.hookSpecificOutput.permissionDecisionReason).toContain(
+          'plan mode'
+        );
+      });
+
+      it('should deny Edit operations in plan mode', async () => {
+        const input = createTestInputWithMode(
+          'Edit',
+          { file_path: '/test/file.txt', old_string: 'old', new_string: 'new' },
+          'plan'
+        );
+        const result = await runCommand(JSON.stringify(input));
+
+        expect(result.code).toBe(0);
+        const output = JSON.parse(result.stdout);
+        expect(output.hookSpecificOutput.permissionDecision).toBe('deny');
+        expect(output.hookSpecificOutput.permissionDecisionReason).toContain(
+          'plan mode'
+        );
+      });
+
+      it('should allow Glob operations in plan mode', async () => {
+        const input = createTestInputWithMode(
+          'Glob',
+          { pattern: '**/*.ts' },
+          'plan'
+        );
+        const result = await runCommand(JSON.stringify(input));
+
+        expect(result.code).toBe(0);
+        const output = JSON.parse(result.stdout);
+        expect(output.hookSpecificOutput.permissionDecision).toBe('allow');
+      });
+    });
+
+    describe('acceptEdits mode', () => {
+      it('should allow Write operations in acceptEdits mode', async () => {
+        const input = createTestInputWithMode(
+          'Write',
+          { file_path: '/test/file.txt', content: 'test' },
+          'acceptEdits'
+        );
+        const result = await runCommand(JSON.stringify(input));
+
+        expect(result.code).toBe(0);
+        const output = JSON.parse(result.stdout);
+        expect(output.hookSpecificOutput.permissionDecision).toBe('allow');
+        expect(output.hookSpecificOutput.permissionDecisionReason).toContain(
+          'acceptEdits mode'
+        );
+      });
+
+      it('should allow Edit operations in acceptEdits mode', async () => {
+        const input = createTestInputWithMode(
+          'Edit',
+          { file_path: '/test/file.txt', old_string: 'old', new_string: 'new' },
+          'acceptEdits'
+        );
+        const result = await runCommand(JSON.stringify(input));
+
+        expect(result.code).toBe(0);
+        const output = JSON.parse(result.stdout);
+        expect(output.hookSpecificOutput.permissionDecision).toBe('allow');
+        expect(output.hookSpecificOutput.permissionDecisionReason).toContain(
+          'acceptEdits mode'
+        );
+      });
+    });
+
+    describe('dontAsk mode', () => {
+      it('should allow EnterPlanMode in dontAsk mode (no ask)', async () => {
+        const input = createTestInputWithMode('EnterPlanMode', {}, 'dontAsk');
+        const result = await runCommand(JSON.stringify(input));
+
+        expect(result.code).toBe(0);
+        const output = JSON.parse(result.stdout);
+        expect(output.hookSpecificOutput.permissionDecision).toBe('allow');
+        expect(output.hookSpecificOutput.permissionDecisionReason).toContain(
+          'dontAsk mode'
+        );
+      });
+
+      it('should allow Write operations in dontAsk mode', async () => {
+        const input = createTestInputWithMode(
+          'Write',
+          { file_path: '/test/file.txt', content: 'test' },
+          'dontAsk'
+        );
+        const result = await runCommand(JSON.stringify(input));
+
+        expect(result.code).toBe(0);
+        const output = JSON.parse(result.stdout);
+        expect(output.hookSpecificOutput.permissionDecision).toBe('allow');
+      });
+    });
+
+    describe('bypassPermissions mode', () => {
+      it('should allow any operation in bypassPermissions mode', async () => {
+        const input = createTestInputWithMode(
+          'Write',
+          { file_path: '/test/file.txt', content: 'test' },
+          'bypassPermissions'
+        );
+        const result = await runCommand(JSON.stringify(input));
+
+        expect(result.code).toBe(0);
+        const output = JSON.parse(result.stdout);
+        expect(output.hookSpecificOutput.permissionDecision).toBe('allow');
+        expect(output.hookSpecificOutput.permissionDecisionReason).toContain(
+          'bypassPermissions mode'
+        );
+      });
+
+      it('should allow Bash in bypassPermissions mode', async () => {
+        const input = createTestInputWithMode(
+          'Bash',
+          { command: 'rm -rf /' },
+          'bypassPermissions'
+        );
+        const result = await runCommand(JSON.stringify(input));
+
+        expect(result.code).toBe(0);
+        const output = JSON.parse(result.stdout);
+        expect(output.hookSpecificOutput.permissionDecision).toBe('allow');
+        expect(output.hookSpecificOutput.permissionDecisionReason).toContain(
+          'bypassPermissions mode'
+        );
+      });
+    });
+
+    describe('default mode', () => {
+      it('should allow Read operations in default mode', async () => {
+        const input = createTestInputWithMode(
+          'Read',
+          { file_path: '/test/file.txt' },
+          'default'
+        );
+        const result = await runCommand(JSON.stringify(input));
+
+        expect(result.code).toBe(0);
+        const output = JSON.parse(result.stdout);
+        expect(output.hookSpecificOutput.permissionDecision).toBe('allow');
+      });
+
+      it('should allow Write operations in default mode', async () => {
+        const input = createTestInputWithMode(
+          'Write',
+          { file_path: '/test/file.txt', content: 'test' },
+          'default'
+        );
+        const result = await runCommand(JSON.stringify(input));
+
+        expect(result.code).toBe(0);
+        const output = JSON.parse(result.stdout);
+        expect(output.hookSpecificOutput.permissionDecision).toBe('allow');
+      });
+
+      it('should ask for AskUserQuestion in default mode', async () => {
+        const input = createTestInputWithMode(
+          'AskUserQuestion',
+          { question: 'Test question?' },
+          'default'
+        );
+        const result = await runCommand(JSON.stringify(input));
+
+        expect(result.code).toBe(0);
+        const output = JSON.parse(result.stdout);
+        expect(output.hookSpecificOutput.permissionDecision).toBe('ask');
+      });
+    });
+
+    describe('backward compatibility', () => {
+      it('should default to default mode when permission_mode not provided', async () => {
+        // Standard test input without permission_mode
+        const input = {
+          session_id: 'test-session',
+          transcript_path: '/tmp/test-transcript',
+          tool_name: 'Read',
+          tool_input: { file_path: '/test/file.txt' },
+        };
+        const result = await runCommand(JSON.stringify(input));
+
+        expect(result.code).toBe(0);
+        const output = JSON.parse(result.stdout);
+        expect(output.hookSpecificOutput.permissionDecision).toBe('allow');
+      });
+
+      it('should work with existing tests without permission_mode', async () => {
+        const input = {
+          session_id: 'test-session',
+          transcript_path: '/tmp/test-transcript',
+          tool_name: 'Write',
+          tool_input: { file_path: '/test/file.txt', content: 'test' },
+        };
+        const result = await runCommand(JSON.stringify(input));
+
+        expect(result.code).toBe(0);
+        const output = JSON.parse(result.stdout);
+        // Default mode allows writes
+        expect(output.hookSpecificOutput.permissionDecision).toBe('allow');
+      });
+    });
+  });
 });

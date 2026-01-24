@@ -1,7 +1,11 @@
 import { readFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
-import type { HookOutput, ToolDecision } from '../types/hook-schemas.js';
+import type {
+  HookOutput,
+  ToolDecision,
+  PermissionMode,
+} from '../types/hook-schemas.js';
 import { parseHookInput, ToolDecisionSchema } from '../types/hook-schemas.js';
 import { logApproval } from '../logger.js';
 import { loadConfig } from '../utils/config.js';
@@ -24,12 +28,16 @@ function loadUserPromptTemplate(): string {
 
 function buildUserPrompt(
   toolName: string,
-  toolInput: Record<string, unknown>
+  toolInput: Record<string, unknown>,
+  permissionMode: PermissionMode,
+  cwd: string
 ): string {
   const template = loadUserPromptTemplate();
   return template
     .replace('{{toolName}}', toolName)
-    .replace('{{toolInput}}', JSON.stringify(toolInput, null, 2));
+    .replace('{{toolInput}}', JSON.stringify(toolInput, null, 2))
+    .replace('{{permissionMode}}', permissionMode)
+    .replace('{{cwd}}', cwd);
 }
 
 function getToolDecisionJsonSchema() {
@@ -57,11 +65,13 @@ function getToolDecisionJsonSchema() {
 
 async function queryLLM(
   toolName: string,
-  toolInput: Record<string, unknown>
+  toolInput: Record<string, unknown>,
+  permissionMode: PermissionMode,
+  cwd: string
 ): Promise<ToolDecision> {
   const llmClient = getLLMClient();
   const systemPrompt = loadSystemPrompt();
-  const userPrompt = buildUserPrompt(toolName, toolInput);
+  const userPrompt = buildUserPrompt(toolName, toolInput, permissionMode, cwd);
 
   const response = await llmClient.chatCompletion(
     systemPrompt,
@@ -79,162 +89,187 @@ async function queryLLM(
   );
 }
 
-// Whitelist of all known Claude Code tools
-// Tools not in this list will be denied by default
-const CLAUDE_CODE_TOOLS = new Set([
-  // Read-only tools
+// Read-only tools - safe in ALL modes
+const READ_ONLY_TOOLS = new Set([
   'Read',
   'LS',
+  'LSP',
   'Glob',
   'Grep',
   'WebFetch',
   'WebSearch',
   'NotebookRead',
-  'BashOutput',
-
-  // Write/Edit tools
-  'Write',
-  'Edit',
-  'MultiEdit',
-  'NotebookEdit',
-
-  // Execution tools
-  'Bash',
-  'Task',
-  'KillShell',
-
-  // Planning and task management tools
-  'TodoWrite',
   'TodoRead',
+  'Task',
+  'BashOutput',
+  'Skill',
+  'SlashCommand',
+]);
+
+// Interactive tools - always ask (except dontAsk/bypassPermissions)
+const INTERACTIVE_TOOLS = new Set([
+  'AskUserQuestion',
   'EnterPlanMode',
   'ExitPlanMode',
-
-  // User interaction tools
-  'AskUserQuestion',
-
-  // Extension tools
-  'Skill',
-  'SlashCommand',
 ]);
 
-// Tools that are unambiguously safe and should be auto-approved without AI query
-const FAST_APPROVE_TOOLS = new Set([
-  'Read',
-  'LS',
-  'Glob',
-  'Grep',
-  'WebFetch',
-  'WebSearch',
-  'NotebookRead',
-  'TodoWrite',
-  'TodoRead',
-  'Task',
-  'BashOutput',
-  'Skill',
-  'SlashCommand',
-]);
-
-// Tools that are safe for writing/editing in development contexts
-const SAFE_WRITE_TOOLS = new Set([
+// Write/mutation tools - behavior depends on mode
+const MUTATING_TOOLS = new Set([
   'Write',
   'Edit',
   'MultiEdit',
   'NotebookEdit',
+  'TodoWrite',
 ]);
+
+// Tools that require LLM analysis (e.g., Bash commands)
+const LLM_ANALYZED_TOOLS = new Set(['Bash', 'KillShell']);
+
+// Check if a tool is a known Claude Code tool
+function isKnownTool(toolName: string): boolean {
+  return (
+    READ_ONLY_TOOLS.has(toolName) ||
+    INTERACTIVE_TOOLS.has(toolName) ||
+    MUTATING_TOOLS.has(toolName) ||
+    LLM_ANALYZED_TOOLS.has(toolName) ||
+    isMcpTool(toolName)
+  );
+}
 
 // Check if a tool is an MCP tool (prefixed with mcp__)
 function isMcpTool(toolName: string): boolean {
   return toolName.startsWith('mcp__');
 }
 
+// Apply permission mode adjustments to decision
+function applyPermissionModeToDecision(
+  decision: 'allow' | 'deny' | 'ask',
+  permissionMode: PermissionMode
+): 'allow' | 'deny' | 'ask' {
+  if (permissionMode === 'dontAsk' && decision === 'ask') {
+    return 'allow'; // Permissive in dontAsk mode
+  }
+  return decision;
+}
+
+// Create a HookOutput from a decision
+function createHookOutput(
+  decision: 'allow' | 'deny' | 'ask',
+  reason: string
+): HookOutput {
+  return {
+    hookSpecificOutput: {
+      hookEventName: 'PreToolUse',
+      permissionDecision: decision,
+      permissionDecisionReason: reason,
+    },
+  };
+}
+
 function shouldFastApprove(
   toolName: string,
-  toolInput: Record<string, unknown>
+  toolInput: Record<string, unknown>,
+  permissionMode: PermissionMode
 ): HookOutput | null {
-  // Deny unknown tools that are not in the whitelist (unless they are MCP tools)
-  if (!CLAUDE_CODE_TOOLS.has(toolName) && !isMcpTool(toolName)) {
-    return {
-      hookSpecificOutput: {
-        hookEventName: 'PreToolUse',
-        permissionDecision: 'deny',
-        permissionDecisionReason: `${toolName} is not a recognized Claude Code tool`,
-      },
-    };
+  // bypassPermissions: approve everything immediately
+  if (permissionMode === 'bypassPermissions') {
+    return createHookOutput(
+      'allow',
+      `${toolName} auto-approved in bypassPermissions mode`
+    );
   }
 
-  // Planning tools should always ask for user feedback
-  if (toolName === 'EnterPlanMode') {
-    return {
-      hookSpecificOutput: {
-        hookEventName: 'PreToolUse',
-        permissionDecision: 'ask',
-        permissionDecisionReason:
-          'EnterPlanMode requires user confirmation before proceeding',
-      },
-    };
+  // Read-only tools: always allow in all modes
+  if (READ_ONLY_TOOLS.has(toolName)) {
+    return createHookOutput(
+      'allow',
+      `${toolName} is a safe read-only operation`
+    );
   }
 
-  if (toolName === 'ExitPlanMode') {
-    return {
-      hookSpecificOutput: {
-        hookEventName: 'PreToolUse',
-        permissionDecision: 'ask',
-        permissionDecisionReason:
-          'ExitPlanMode requires user confirmation before proceeding',
-      },
-    };
-  }
+  // Interactive tools: handle based on permission mode
+  if (INTERACTIVE_TOOLS.has(toolName)) {
+    if (permissionMode === 'dontAsk') {
+      return createHookOutput(
+        'allow',
+        `${toolName} auto-approved in dontAsk mode`
+      );
+    }
 
-  if (toolName === 'AskUserQuestion') {
-    const potentialQuestion = toolInput['question'];
-    const question =
-      typeof potentialQuestion === 'string' ? potentialQuestion : null;
-
-    return {
-      hookSpecificOutput: {
-        hookEventName: 'PreToolUse',
-        permissionDecision: 'ask',
-        permissionDecisionReason: question
+    // For AskUserQuestion, include the question in the reason
+    if (toolName === 'AskUserQuestion') {
+      const potentialQuestion = toolInput['question'];
+      const question =
+        typeof potentialQuestion === 'string' ? potentialQuestion : null;
+      return createHookOutput(
+        'ask',
+        question
           ? `Passing question to user: "${question}"`
-          : 'AskUserQuestion requires a user response',
-      },
-    };
+          : 'AskUserQuestion requires a user response'
+      );
+    }
+
+    return createHookOutput(
+      'ask',
+      `${toolName} requires user confirmation before proceeding`
+    );
   }
 
-  // MCP tools are approved (they passed the whitelist check above)
+  // Mutating tools: behavior depends on permission mode
+  if (MUTATING_TOOLS.has(toolName)) {
+    // plan mode: deny all mutations
+    if (permissionMode === 'plan') {
+      return createHookOutput(
+        'deny',
+        `${toolName} denied in plan mode - only read operations allowed`
+      );
+    }
+
+    // acceptEdits mode: allow file edits
+    if (permissionMode === 'acceptEdits') {
+      return createHookOutput(
+        'allow',
+        `${toolName} auto-approved in acceptEdits mode`
+      );
+    }
+
+    // dontAsk mode: allow mutations (permissive)
+    if (permissionMode === 'dontAsk') {
+      return createHookOutput(
+        'allow',
+        `${toolName} auto-approved in dontAsk mode`
+      );
+    }
+
+    // default mode: allow write operations (original CCB behavior)
+    return createHookOutput(
+      'allow',
+      `${toolName} is a safe development operation`
+    );
+  }
+
+  // MCP tools: handle based on permission mode
   if (isMcpTool(toolName)) {
-    return {
-      hookSpecificOutput: {
-        hookEventName: 'PreToolUse',
-        permissionDecision: 'allow',
-        permissionDecisionReason: `${toolName} is an MCP tool`,
-      },
-    };
+    // plan mode: allow MCP tools (assume read-only unless LLM says otherwise)
+    // dontAsk/acceptEdits/default: allow MCP tools
+    return createHookOutput('allow', `${toolName} is an MCP tool`);
   }
 
-  // Always approve read-only tools
-  if (FAST_APPROVE_TOOLS.has(toolName)) {
-    return {
-      hookSpecificOutput: {
-        hookEventName: 'PreToolUse',
-        permissionDecision: 'allow',
-        permissionDecisionReason: `${toolName} is a safe read-only operation`,
-      },
-    };
+  // LLM-analyzed tools (Bash, KillShell): fall through to AI query
+  if (LLM_ANALYZED_TOOLS.has(toolName)) {
+    return null;
   }
 
-  // Approve safe write tools for development files
-  if (SAFE_WRITE_TOOLS.has(toolName)) {
-    return {
-      hookSpecificOutput: {
-        hookEventName: 'PreToolUse',
-        permissionDecision: 'allow',
-        permissionDecisionReason: `${toolName} is a safe development operation`,
-      },
-    };
+  // Unknown tools: deny with explanation
+  if (!isKnownTool(toolName)) {
+    return createHookOutput(
+      'deny',
+      `${toolName} is not a recognized Claude Code tool`
+    );
   }
 
-  return null; // No fast approval, use AI query (for Bash, KillShell, etc.)
+  // Fallback: should not reach here, but fall through to AI query if it does
+  return null;
 }
 
 export async function autoApproveTools(noCache?: boolean): Promise<void> {
@@ -242,7 +277,8 @@ export async function autoApproveTools(noCache?: boolean): Promise<void> {
     const input = readFileSync(0, 'utf8');
     const jsonData = JSON.parse(input);
     const hookData = parseHookInput(jsonData);
-    const workingDir = process.cwd();
+    const workingDir = hookData.cwd || process.cwd();
+    const permissionMode = hookData.permission_mode;
     const config = loadConfig();
 
     log.debug(
@@ -251,6 +287,7 @@ export async function autoApproveTools(noCache?: boolean): Promise<void> {
         input: hookData.tool_input,
         sessionId: hookData.session_id,
         cwd: workingDir,
+        permissionMode: permissionMode,
         noCache: noCache,
         cacheEnabled: config.cache,
       },
@@ -262,7 +299,8 @@ export async function autoApproveTools(noCache?: boolean): Promise<void> {
     // Check for fast approval first
     const fastApproval = shouldFastApprove(
       hookData.tool_name,
-      hookData.tool_input
+      hookData.tool_input,
+      permissionMode
     );
     if (fastApproval) {
       log.info(
@@ -323,14 +361,25 @@ export async function autoApproveTools(noCache?: boolean): Promise<void> {
         // Fall back to AI-powered decision making
         const claudeResponse = await queryLLM(
           hookData.tool_name,
-          hookData.tool_input
+          hookData.tool_input,
+          permissionMode,
+          workingDir
+        );
+
+        // Apply permission mode adjustments to LLM decision
+        const finalDecision = applyPermissionModeToDecision(
+          claudeResponse.decision,
+          permissionMode
         );
 
         output = {
           hookSpecificOutput: {
             hookEventName: 'PreToolUse',
-            permissionDecision: claudeResponse.decision,
-            permissionDecisionReason: claudeResponse.reason,
+            permissionDecision: finalDecision,
+            permissionDecisionReason:
+              finalDecision !== claudeResponse.decision
+                ? `${claudeResponse.reason} (converted from ${claudeResponse.decision} to ${finalDecision} in ${permissionMode} mode)`
+                : claudeResponse.reason,
           },
         };
 
