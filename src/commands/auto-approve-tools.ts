@@ -101,16 +101,25 @@ const READ_ONLY_TOOLS = new Set([
   'NotebookRead',
   'TodoRead',
   'Task',
+  'Agent',
+  'TaskOutput',
+  'TaskGet',
+  'TaskList',
   'BashOutput',
+  'Sleep',
   'Skill',
   'SlashCommand',
+  'ToolSearch',
+  'ListMcpResourcesTool',
+  'ReadMcpResourceTool',
+  'EnterPlanMode',
 ]);
 
 // Interactive tools - always ask (except dontAsk/bypassPermissions)
 const INTERACTIVE_TOOLS = new Set([
   'AskUserQuestion',
-  'EnterPlanMode',
   'ExitPlanMode',
+  'EnterWorktree',
 ]);
 
 // Write/mutation tools - behavior depends on mode
@@ -120,10 +129,28 @@ const MUTATING_TOOLS = new Set([
   'MultiEdit',
   'NotebookEdit',
   'TodoWrite',
+  'TaskCreate',
+  'TaskUpdate',
+  'SendMessageTool',
+  'TeammateTool',
+  'Computer',
+]);
+
+// Tools allowed in plan mode (agent needs these to write/update the plan)
+const PLAN_MODE_ALLOWED_TOOLS = new Set([
+  'TodoWrite',
+  'Write',
+  'TaskCreate',
+  'TaskUpdate',
 ]);
 
 // Tools that require LLM analysis (e.g., Bash commands)
-const LLM_ANALYZED_TOOLS = new Set(['Bash', 'KillShell']);
+const LLM_ANALYZED_TOOLS = new Set([
+  'Bash',
+  'KillShell',
+  'TaskStop',
+  'TeamDelete',
+]);
 
 // Check if a tool is a known Claude Code tool
 function isKnownTool(toolName: string): boolean {
@@ -217,11 +244,17 @@ function shouldFastApprove(
 
   // Mutating tools: behavior depends on permission mode
   if (MUTATING_TOOLS.has(toolName)) {
-    // plan mode: deny all mutations
+    // plan mode: allow plan-related tools, deny other mutations
     if (permissionMode === 'plan') {
+      if (PLAN_MODE_ALLOWED_TOOLS.has(toolName)) {
+        return createHookOutput(
+          'allow',
+          `${toolName} allowed in plan mode for plan file updates`
+        );
+      }
       return createHookOutput(
         'deny',
-        `${toolName} denied in plan mode - only read operations allowed`
+        `${toolName} denied in plan mode - only read operations and plan updates allowed`
       );
     }
 
@@ -260,12 +293,13 @@ function shouldFastApprove(
     return null;
   }
 
-  // Unknown tools: deny with explanation
+  // Unknown tools: return no decision, let Claude Code's default permission system handle it
   if (!isKnownTool(toolName)) {
-    return createHookOutput(
-      'deny',
-      `${toolName} is not a recognized Claude Code tool`
-    );
+    return {
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse' as const,
+      },
+    };
   }
 
   // Fallback: should not reach here, but fall through to AI query if it does
@@ -402,7 +436,7 @@ export async function autoApproveTools(noCache?: boolean): Promise<void> {
         hookData.tool_name,
         hookData.tool_input,
         output.hookSpecificOutput.permissionDecision || 'undefined',
-        output.hookSpecificOutput.permissionDecisionReason,
+        output.hookSpecificOutput.permissionDecisionReason || 'no decision',
         hookData.session_id
       );
     }

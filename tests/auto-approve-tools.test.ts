@@ -162,7 +162,7 @@ describe('auto-approve-tools', () => {
     );
   });
 
-  it('should deny unknown tools not in the whitelist', async () => {
+  it('should pass through unknown tools without a decision', async () => {
     const input = createTestInput('UnknownTool', { arbitrary: 'data' });
     const result = await runCommand(JSON.stringify(input));
 
@@ -171,18 +171,9 @@ describe('auto-approve-tools', () => {
 
     const output = JSON.parse(result.stdout);
 
-    // The response should deny unknown tools
+    // Unknown tools should return empty output so Claude Code's default permission system handles them
     expect(output).toHaveProperty('hookSpecificOutput');
-    expect(output.hookSpecificOutput).toHaveProperty(
-      'permissionDecision',
-      'deny'
-    );
-    expect(output.hookSpecificOutput).toHaveProperty(
-      'permissionDecisionReason'
-    );
-    expect(output.hookSpecificOutput.permissionDecisionReason).toContain(
-      'not a recognized Claude Code tool'
-    );
+    expect(output.hookSpecificOutput.permissionDecision).toBeUndefined();
   });
 
   it('should handle malformed input gracefully', async () => {
@@ -602,6 +593,77 @@ describe('auto-approve-tools', () => {
       );
     });
 
+    it('should fast-approve Agent operations', async () => {
+      const input = createTestInput('Agent', {
+        prompt: 'Search for files',
+        subagent_type: 'Explore',
+      });
+      const result = await runCommand(JSON.stringify(input));
+
+      expect(result.code).toBe(0);
+      expect(result.stdout).toBeTruthy();
+
+      const output = JSON.parse(result.stdout);
+      expect(output.hookSpecificOutput).toHaveProperty(
+        'permissionDecision',
+        'allow'
+      );
+      expect(output.hookSpecificOutput.permissionDecisionReason).toContain(
+        'Agent is a safe read-only operation'
+      );
+    });
+
+    it('should fast-approve TaskCreate operations', async () => {
+      const input = createTestInput('TaskCreate', {
+        subject: 'Test task',
+        description: 'A test task',
+      });
+      const result = await runCommand(JSON.stringify(input));
+
+      expect(result.code).toBe(0);
+      expect(result.stdout).toBeTruthy();
+
+      const output = JSON.parse(result.stdout);
+      expect(output.hookSpecificOutput).toHaveProperty(
+        'permissionDecision',
+        'allow'
+      );
+      expect(output.hookSpecificOutput.permissionDecisionReason).toContain(
+        'TaskCreate is a safe development operation'
+      );
+    });
+
+    it('should fast-approve EnterWorktree with ask in default mode', async () => {
+      const input = createTestInput('EnterWorktree', { name: 'feature-test' });
+      const result = await runCommand(JSON.stringify(input));
+
+      expect(result.code).toBe(0);
+      expect(result.stdout).toBeTruthy();
+
+      const output = JSON.parse(result.stdout);
+      expect(output.hookSpecificOutput).toHaveProperty(
+        'permissionDecision',
+        'ask'
+      );
+    });
+
+    it('should fast-approve Sleep operations', async () => {
+      const input = createTestInput('Sleep', { duration: 1000 });
+      const result = await runCommand(JSON.stringify(input));
+
+      expect(result.code).toBe(0);
+      expect(result.stdout).toBeTruthy();
+
+      const output = JSON.parse(result.stdout);
+      expect(output.hookSpecificOutput).toHaveProperty(
+        'permissionDecision',
+        'allow'
+      );
+      expect(output.hookSpecificOutput.permissionDecisionReason).toContain(
+        'Sleep is a safe read-only operation'
+      );
+    });
+
     it('should fast-approve MCP tools', async () => {
       const input = createTestInput('mcp__playwright__browser_click', {
         selector: '#button',
@@ -722,7 +784,7 @@ describe('auto-approve-tools', () => {
       expect(blockEntry.tool).toBe('Bash');
 
       expect(undefinedEntry).toBeDefined();
-      expect(undefinedEntry.decision).toBe('deny');
+      expect(undefinedEntry.decision).toBe('undefined');
       expect(undefinedEntry.tool).toBe('UnknownTool');
     });
 
@@ -966,7 +1028,7 @@ describe('auto-approve-tools', () => {
         expect(output.hookSpecificOutput.permissionDecision).toBe('allow');
       });
 
-      it('should deny Write operations in plan mode', async () => {
+      it('should allow Write operations in plan mode (needed for plan file updates)', async () => {
         const input = createTestInputWithMode(
           'Write',
           { file_path: '/test/file.txt', content: 'test' },
@@ -976,7 +1038,23 @@ describe('auto-approve-tools', () => {
 
         expect(result.code).toBe(0);
         const output = JSON.parse(result.stdout);
-        expect(output.hookSpecificOutput.permissionDecision).toBe('deny');
+        expect(output.hookSpecificOutput.permissionDecision).toBe('allow');
+        expect(output.hookSpecificOutput.permissionDecisionReason).toContain(
+          'plan mode'
+        );
+      });
+
+      it('should allow TodoWrite operations in plan mode (needed for plan task tracking)', async () => {
+        const input = createTestInputWithMode(
+          'TodoWrite',
+          { todos: [{ id: '1', content: 'Plan step 1', status: 'pending' }] },
+          'plan'
+        );
+        const result = await runCommand(JSON.stringify(input));
+
+        expect(result.code).toBe(0);
+        const output = JSON.parse(result.stdout);
+        expect(output.hookSpecificOutput.permissionDecision).toBe('allow');
         expect(output.hookSpecificOutput.permissionDecisionReason).toContain(
           'plan mode'
         );
@@ -1047,7 +1125,7 @@ describe('auto-approve-tools', () => {
     });
 
     describe('dontAsk mode', () => {
-      it('should allow EnterPlanMode in dontAsk mode (no ask)', async () => {
+      it('should allow EnterPlanMode in dontAsk mode (read-only)', async () => {
         const input = createTestInputWithMode('EnterPlanMode', {}, 'dontAsk');
         const result = await runCommand(JSON.stringify(input));
 
@@ -1055,7 +1133,7 @@ describe('auto-approve-tools', () => {
         const output = JSON.parse(result.stdout);
         expect(output.hookSpecificOutput.permissionDecision).toBe('allow');
         expect(output.hookSpecificOutput.permissionDecisionReason).toContain(
-          'dontAsk mode'
+          'safe read-only operation'
         );
       });
 
